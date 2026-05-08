@@ -193,6 +193,47 @@ class ConversationEngine:
 
         return {"response": "\n".join(lines)}
 
+    def _generate_report_on_demand(self, state: ConvState, repo_id: Optional[int], time_range: str) -> str:
+        """当没有预生成报告时，按需生成。"""
+        from app.reporter.daily import DailyReporter
+        from app.reporter.weekly import WeeklyReporter
+        from app.reporter.monthly import MonthlyReporter
+
+        pm = ProjectManager(self.db)
+        repos = pm.get_user_repositories(state["user_id"])
+        target_repo = next((r for r in repos if r.id == repo_id), repos[0] if repos else None)
+        if not target_repo:
+            return "暂无报告，且没有可用的项目来生成报告。"
+
+        # Determine report type from time_range
+        report_type = "daily"
+        if any(kw in time_range for kw in ("周", "week", "星期")):
+            report_type = "weekly"
+        elif any(kw in time_range for kw in ("月", "month")):
+            report_type = "monthly"
+
+        try:
+            if report_type == "daily":
+                reporter = DailyReporter(self.db)
+                report = reporter.generate(target_repo)
+            elif report_type == "weekly":
+                reporter = WeeklyReporter(self.db)
+                report = reporter.generate(target_repo)
+            else:
+                reporter = MonthlyReporter(self.db)
+                report = reporter.generate(target_repo)
+
+            if report:
+                return (
+                    f"📋 *[{report.report_type.upper()}] {target_repo.name}*\n"
+                    f"📅 {report.period_start.date()} ~ {report.period_end.date()}\n\n"
+                    f"{report.content[:3000]}"
+                )
+            return f"该时间段内 {target_repo.name} 没有提交记录，无法生成报告。"
+        except Exception as e:
+            logger.error(f"Report generation failed: {e}")
+            return f"生成报告失败：{str(e)[:200]}"
+
     def _extract_params(self, state: ConvState) -> dict:
         prompt = EXTRACT_PARAMS_PROMPT.format(message=state["message"])
         resp = self.llm.invoke([HumanMessage(content=prompt)])
@@ -250,14 +291,15 @@ class ConversationEngine:
                 data = "\n".join(lines)
         elif intent == "get_report":
             reports = retriever.query_reports(repo_id)
-            if not reports:
-                data = "暂无报告。"
-            else:
+            if reports:
                 lines = [f"共找到 {len(reports)} 份报告："]
                 for r in reports:
                     lines.append(f"- [{r.report_type}] {r.period_start.date()} ~ {r.period_end.date()}")
                     lines.append(f"  {r.content[:200]}...")
                 data = "\n".join(lines)
+            else:
+                # No pre-generated report — generate on the fly
+                data = self._generate_report_on_demand(state, repo_id, params.get("time_range", ""))
         else:
             data = ""
 
