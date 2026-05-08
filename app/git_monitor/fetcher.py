@@ -33,6 +33,13 @@ class GitFetcher:
 
         return self._get_new_commits(git_repo, repo)
 
+    @staticmethod
+    def _to_utc_naive(dt: datetime.datetime) -> datetime.datetime:
+        """Convert aware datetime to naive UTC for consistent SQLite storage."""
+        if dt.tzinfo is not None:
+            return dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        return dt
+
     def _get_new_commits(self, git_repo: Repo, repo: Repository) -> list[Commit]:
         new_commits = []
         last_commit = (
@@ -43,7 +50,8 @@ class GitFetcher:
         )
 
         for c in git_repo.iter_commits(rev=repo.branch):
-            if last_commit and c.committed_datetime <= last_commit.committed_at:
+            commit_dt = self._to_utc_naive(c.committed_datetime)
+            if last_commit and commit_dt <= self._to_utc_naive(last_commit.committed_at):
                 break
             commit = Commit(
                 repo_id=repo.id,
@@ -51,13 +59,13 @@ class GitFetcher:
                 author=str(c.author),
                 message=c.message.strip(),
                 diff_content=self._get_diff(git_repo, c),
-                committed_at=c.committed_datetime,
+                committed_at=commit_dt,
             )
             self.db.add(commit)
             self.db.flush()
             new_commits.append(commit)
 
-        repo.last_fetched_at = datetime.datetime.utcnow()
+        repo.last_fetched_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         self.db.commit()
         return new_commits
 

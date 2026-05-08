@@ -7,7 +7,7 @@ from app.bot.project_manager import ProjectManager
 
 
 def _parse_time_range(time_range: str) -> tuple[Optional[datetime.datetime], Optional[datetime.datetime]]:
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     time_range = time_range.strip()
 
     if "昨天" in time_range:
