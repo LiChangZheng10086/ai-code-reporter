@@ -7,7 +7,6 @@ from app.config import settings
 from app.database import init_db, SessionLocal
 from app.bot.bot import TelegramBot
 from app.scheduler.tasks import start_scheduler
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -46,7 +45,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ai-code-reporter", version="0.1.0", lifespan=lifespan)
-
 
 @app.get("/health")
 async def health():
