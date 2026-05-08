@@ -40,8 +40,8 @@ ai-code-reporter 的目标就是将这个流程完全自动化：
 
 - 支持任意 Git 仓库（GitHub、GitLab、Gitee、自建 Git 服务等）
 - 支持 HTTPS 协议接入，通过 Token 进行身份认证
-- 定时轮询检测新提交，自动拉取最新代码
-- 可选 Webhook 模式，接收推送事件实时响应
+- 定时轮询检测新提交，自动拉取最新代码（测试阶段每分钟，正式可配置）
+- 用户可随时主动触发检查更新，无需等待定时轮询
 - 自动提取每次提交的 diff 内容，便于后续分析
 
 ### AI 代码审核
@@ -77,6 +77,27 @@ ai-code-reporter 的目标就是将这个流程完全自动化：
 - AI 生成的趋势总结和改进建议
 - 按项目维度分别生成
 
+**按需生成**：用户随时可以在对话中要求查看日报/周报/月报，系统会先查找已有的报告，没有则立即生成，并自动保存数据库。
+
+### 主动推送通知
+
+当定时轮询或用户主动检查发现有新提交时，Bot 会立即向用户推送通知，内容包括：
+
+```
+📦 project-name 有新的代码提交！
+━━━━━━━━━━━━━━━━━
+
+📝 Commit a1b2c3d4
+👤 提交人: zhangsan
+💬 信息: fix: 修复了登录页面崩溃
+🕐 05-08 14:30
+🟢 审核: 风险 low | 评分 85
+✅ 未发现明显问题
+💡 优化建议: 建议增强空指针判断
+```
+
+同时更新当天的日结报告数据，确保报告内容始终与最新提交同步。
+
 ### 多项目管理
 
 - 支持接入多个 Git 仓库
@@ -89,12 +110,11 @@ ai-code-reporter 的目标就是将这个流程完全自动化：
 
 在 Telegram Bot 中直接发送自然语言消息即可查询历史数据。支持：
 
+- **检查代码更新** — "检查更新"、"有没有新提交"、"拉取最新代码"
 - **查询提交记录** — "昨天有谁提交了代码？"、"查一下 user1 上周的提交"
 - **查询审核结果** — "上周发现了哪些严重的 Bug？"、"最近有哪些高风险审核"
-- **查询报告** — "上个月的月结报告是什么？"、"给我看本周的周报"
+- **查询报告** — "上个月的月结报告是什么？"、"给我看本周的周报"（无预生成报告则自动按需生成）
 - **跨项目查询** — "在 project-a 中查找昨天的提交"
-
-查询流程：用户消息 → 意图识别 → 参数提取（时间/项目/关键词） → 数据库检索 → LLM 组织回答
 
 ## 技术栈
 
@@ -127,7 +147,7 @@ ai-code-reporter 的目标就是将这个流程完全自动化：
 │  │   Git 监控模块        │     │      代码审核模块             │     │
 │  │                     │────▶│                             │     │
 │  │  · 定时轮询仓库       │     │  · LangGraph 工作流          │     │
-│  │  · Webhook（可选）    │     │  · 风险分级：high/med/low    │     │
+│  │  · 用户主动触发检查    │     │  · 风险分级：high/med/low    │     │
 │  │  · Diff 提取         │     │  · 高风险触发修复建议通道     │     │
 │  └──────────┬──────────┘     └──────────────┬──────────────┘     │
 │             │                               │                    │
@@ -147,7 +167,7 @@ ai-code-reporter 的目标就是将这个流程完全自动化：
 │             │  ┌─────────────────────────────────────────┐       │
 │             │  │        定时任务调度器                       │       │
 │             │  │                                         │       │
-│             │  │  · 每 30 分钟：拉取+审核 → 写数据库         │       │
+│             │  │  · 每 1 分钟（可配）：拉取+审核 → 通知用户 → 更新报告 │       │
 │             │  │  · 每天 18:00：生成日结 → 推送到 TG         │       │
 │             │  │  · 每周一 09:00：生成周结 → 推送到 TG       │       │
 │             │  │  · 每月 1 号 09:00：生成月结 → 推送到 TG    │       │
@@ -352,9 +372,11 @@ OLLAMA_MODEL=qwen2.5:32b
 
 | 你的消息 | Bot 的理解与行为 |
 |---|---|
+| "检查更新" | 立即拉取远程仓库，检测新提交并执行代码审核，结果实时推送 |
 | "昨天谁提交了代码？" | 检索当前项目昨天的 commits，列出作者和提交信息 |
 | "上周发现了哪些严重的问题？" | 检索当前项目上周的 reviews，筛选 high/medium 风险 |
-| "给我看上个月的月结报告" | 检索当前项目上个月的 report |
+| "给我看上个月的月结报告" | 先查数据库是否有上月报告，没有则按需生成 |
+| "看看今天的日报" | 查找今日日报，没有则立即生成 |
 | "在 项目A 中查一下 user1 的提交" | 切换到项目A，检索 user1 的 commits |
 | "今天有审核记录吗？" | 检索当前项目今天的 reviews |
 | "你好" | 闲聊模式，不会触发数据库查询 |
@@ -476,38 +498,41 @@ class ConvState(TypedDict):
 #### 图结构
 
 ```
-          ┌──────────────────┐
-          │  classify_intent  │  ← 节点 1：确定用户意图
-          └────────┬─────────┘
-                   │
-          ┌────────┴────────┐
-          ▼                 ▼
-  ┌──────────────┐   ┌──────────────┐
-  │ extract_params│   │ chitchat     │  ← 条件分支
-  └───────┬──────┘   └──────┬───────┘
-          ▼                 │
-  ┌──────────────┐          │
-  │ retrieve_data│          │  ← 闲聊不走数据库
-  └───────┬──────┘          │
-          ▼                 │
-  ┌──────────────┐          │
-  │generate_resp │          │
-  └───────┬──────┘          │
-          │                 │
-          └────────┬────────┘
-                   ▼
-                  END
+                    ┌──────────────────┐
+                    │  classify_intent  │  ← 节点 1：LLM 判断意图
+                    └────────┬─────────┘
+                             │
+             ┌───────────────┼───────────────────┐
+             ▼               ▼                   ▼
+    ┌──────────────┐  ┌──────────┐    ┌──────────────────┐
+    │ extract_params│  │ chitchat  │    │   check_update    │  ← 用户主动检查更新
+    │ (query 类)    │  │ (闲聊)    │    │  (立即拉取+审核)   │
+    └───────┬──────┘  └─────┬────┘    └────────┬─────────┘
+            ▼               │                   │
+    ┌──────────────┐        │                   │
+    │ retrieve_data│        │                   │
+    └───────┬──────┘        │                   │
+            ▼               │                   │
+    ┌──────────────┐        │                   │
+    │generate_resp │        │                   │
+    └───────┬──────┘        │                   │
+            │               │                   │
+            └───────┬───────┘                   │
+                    ▼                          ▼
+                   END ◀────────────────────────┘
 ```
 
 #### 节点说明
 
 | 节点 | 输入 | 逻辑 | 输出 |
 |---|---|---|---|
-| `classify_intent` | user_message | LLM 判断意图：`list_commits` / `list_reviews` / `get_report` / `chitchat` | intent |
+| `classify_intent` | user_message | LLM 判断意图：`list_commits` / `list_reviews` / `get_report` / `check_update` / `chitchat` / `refuse` | intent |
 | `extract_params` | user_message | LLM 提取时间范围、项目名、关键词等参数 | params（JSON） |
-| `retrieve_data` | intent + params | 根据意图查询 commits / reviews / reports 表 | data（文本） |
+| `retrieve_data` | intent + params | 根据意图查询 commits / reviews / reports 表（报告无数据则按需生成） | data（文本） |
 | `generate_response` | question + data | LLM 根据检索到的数据组织自然语言回答 | response |
 | `chitchat_response` | message | 闲聊直接走 LLM，不查询数据库 | response |
+| `refuse_response` | message | 检测到违禁内容，LLM 生成拒绝回复并引导回正常功能 | response |
+| `check_update` | message | 立即拉取远程仓库 → 检测新提交 → 执行代码审核 → 更新日结报告 | response |
 
 #### 核心代码
 
@@ -518,17 +543,22 @@ builder.add_node("extract_params", self._extract_params)
 builder.add_node("retrieve_data", self._retrieve_data)
 builder.add_node("generate_response", self._generate_response)
 builder.add_node("chitchat_response", self._chitchat_response)
+builder.add_node("refuse_response", self._refuse_response)
+builder.add_node("check_update", self._check_update)
 
 builder.set_entry_point("classify_intent")
 builder.add_conditional_edges(
     "classify_intent",
     self._route_intent,
-    {"query": "extract_params", "chitchat": "chitchat_response"},
+    {"query": "extract_params", "chitchat": "chitchat_response",
+     "refuse": "refuse_response", "update": "check_update"},
 )
 builder.add_edge("extract_params", "retrieve_data")
 builder.add_edge("retrieve_data", "generate_response")
 builder.add_edge("generate_response", END)
 builder.add_edge("chitchat_response", END)
+builder.add_edge("refuse_response", END)
+builder.add_edge("check_update", END)
 ```
 
 #### 运行示例
@@ -807,7 +837,7 @@ scp .env user@your-server:/path/to/ai-code-reporter/.env
 
 ### Q：可以同时监控多少个 Git 仓库？
 
-没有硬性限制。每个仓库会定时轮询，30 分钟的轮询间隔下，10 个仓库对系统资源的影响可以忽略不计。
+没有硬性限制。每个仓库会定时轮询（默认 30 分钟，可配置），对系统资源的影响可以忽略不计。用户也可随时主动触发检查更新。
 
 ### Q：DeepSeek API 的费用大概是多少？
 
