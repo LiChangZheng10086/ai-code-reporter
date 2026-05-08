@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.llm import get_llm
 from app.bot.project_manager import ProjectManager
 from app.conversation.memory import ConversationMemory
-from app.conversation.retriever import DataRetriever
+from app.conversation.retriever import DataRetriever, _parse_time_range
 from app.conversation.prompts import (
     CLASSIFY_INTENT_PROMPT,
     EXTRACT_PARAMS_PROMPT,
@@ -191,10 +191,19 @@ class ConversationEngine:
         mem.add_message("user", state["message"])
         mem.add_message("assistant", "\n".join(lines))
 
+        # Also generate today's daily report so data is persisted
+        try:
+            from app.reporter.daily import DailyReporter
+            report = DailyReporter(self.db).generate(active)
+            if report:
+                logger.info(f"Daily report updated for {active.name}")
+        except Exception as e:
+            logger.error(f"Failed to generate daily report after update: {e}")
+
         return {"response": "\n".join(lines)}
 
     def _generate_report_on_demand(self, state: ConvState, repo_id: Optional[int], time_range: str) -> str:
-        """当没有预生成报告时，按需生成。"""
+        """当没有预生成报告时，按需生成（含指定时间范围）。"""
         from app.reporter.daily import DailyReporter
         from app.reporter.weekly import WeeklyReporter
         from app.reporter.monthly import MonthlyReporter
@@ -212,16 +221,27 @@ class ConversationEngine:
         elif any(kw in time_range for kw in ("月", "month")):
             report_type = "monthly"
 
+        # Parse time range to extract period for report generation
+        since, until = _parse_time_range(time_range) if time_range else (None, None)
+
         try:
             if report_type == "daily":
                 reporter = DailyReporter(self.db)
-                report = reporter.generate(target_repo)
+                date = since.date() if since else None
+                report = reporter.generate(target_repo, date=date)
             elif report_type == "weekly":
                 reporter = WeeklyReporter(self.db)
-                report = reporter.generate(target_repo)
-            else:
+                if since:
+                    iso = since.isocalendar()
+                    report = reporter.generate(target_repo, year=iso[0], week=iso[1])
+                else:
+                    report = reporter.generate(target_repo)
+            else:  # monthly
                 reporter = MonthlyReporter(self.db)
-                report = reporter.generate(target_repo)
+                if since:
+                    report = reporter.generate(target_repo, year=since.year, month=since.month)
+                else:
+                    report = reporter.generate(target_repo)
 
             if report:
                 return (
@@ -290,16 +310,39 @@ class ConversationEngine:
                     lines.append(f"- 风险:{r.risk_level} 评分:{r.score} 问题:{issues[:200]}")
                 data = "\n".join(lines)
         elif intent == "get_report":
-            reports = retriever.query_reports(repo_id)
-            if reports:
-                lines = [f"共找到 {len(reports)} 份报告："]
-                for r in reports:
-                    lines.append(f"- [{r.report_type}] {r.period_start.date()} ~ {r.period_end.date()}")
-                    lines.append(f"  {r.content[:200]}...")
-                data = "\n".join(lines)
+            time_range = params.get("time_range", "")
+            since, until = _parse_time_range(time_range) if time_range else (None, None)
+
+            # Determine report type from user's request
+            report_type = "daily"
+            if any(kw in time_range for kw in ("周", "week", "星期")):
+                report_type = "weekly"
+            elif any(kw in time_range for kw in ("月", "month")):
+                report_type = "monthly"
+
+            if since and until:
+                # User specified a time range — try to find existing report for that period
+                reports = retriever.query_reports_by_period(repo_id, since, until, report_type)
+                if reports:
+                    # Show existing report for this period
+                    r = reports[0]
+                    data = (
+                        f"📋 *[{r.report_type.upper()}] {r.period_start.date()} ~ {r.period_end.date()}*\n\n"
+                        f"{r.content[:3000]}"
+                    )
+                else:
+                    data = self._generate_report_on_demand(state, repo_id, time_range)
             else:
-                # No pre-generated report — generate on the fly
-                data = self._generate_report_on_demand(state, repo_id, params.get("time_range", ""))
+                # No specific time range — show latest report for current period
+                reports = retriever.query_reports(repo_id, report_type)
+                if reports:
+                    r = reports[0]
+                    data = (
+                        f"📋 *[{r.report_type.upper()}] {r.period_start.date()} ~ {r.period_end.date()}*\n\n"
+                        f"{r.content[:3000]}"
+                    )
+                else:
+                    data = self._generate_report_on_demand(state, repo_id, time_range)
         else:
             data = ""
 

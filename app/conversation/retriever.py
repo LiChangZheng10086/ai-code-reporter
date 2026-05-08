@@ -95,3 +95,18 @@ class DataRetriever:
         if report_type:
             query = query.filter(Report.report_type == report_type)
         return query.order_by(Report.created_at.desc()).limit(5).all()
+
+    def query_reports_by_period(
+        self, repo_id: Optional[int], since: datetime.datetime, until: datetime.datetime, report_type: str = ""
+    ) -> list[Report]:
+        """按时间范围查找已生成的报告。"""
+        query = self.db.query(Report).filter(
+            Report.user_id == self.user_id,
+            Report.period_start >= since,
+            Report.period_end <= until,
+        )
+        if repo_id:
+            query = query.filter(Report.repo_id == repo_id)
+        if report_type:
+            query = query.filter(Report.report_type == report_type)
+        return query.order_by(Report.created_at.desc()).limit(5).all()
