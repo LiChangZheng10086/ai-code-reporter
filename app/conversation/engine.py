@@ -34,6 +34,9 @@ class ConversationEngine:
         self.db = db
         self.llm = get_llm(temperature=0.3)
         self.graph = self._build_graph()
+        # Cache reusable components
+        self._fetcher = None
+        self._reviewer = None
 
     def _build_graph(self):
         builder = StateGraph(ConvState)
@@ -141,11 +144,13 @@ class ConversationEngine:
         if not active:
             return {"response": "当前没有活动项目。请先使用 /switch 切换到要检查的项目，或指定项目名称。"}
 
-        fetcher = GitFetcher(self.db)
-        reviewer = CodeReviewer(self.db)
+        if self._fetcher is None:
+            self._fetcher = GitFetcher(self.db)
+        if self._reviewer is None:
+            self._reviewer = CodeReviewer(self.db)
 
         try:
-            new_commits = fetcher.clone_or_pull(active)
+            new_commits = self._fetcher.clone_or_pull(active)
         except Exception as e:
             logger.error(f"Git fetch failed for {active.name}: {e}")
             return {"response": f"❌ 拉取 {active.name} 代码失败：{str(e)[:200]}"}
@@ -160,7 +165,7 @@ class ConversationEngine:
 
         for commit in new_commits:
             try:
-                review = reviewer.review(commit)
+                review = self._reviewer.review(commit)
             except Exception as e:
                 review = None
                 logger.error(f"Review failed for commit {commit.id}: {e}")

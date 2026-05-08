@@ -15,6 +15,10 @@ from app.reporter.monthly import MonthlyReporter
 logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
+# Cached reusable instances
+_fetcher = None
+_reviewer = None
+
 
 def get_active_repos(db: Session) -> list[Repository]:
     return db.query(Repository).filter(Repository.is_active == 1).all()
@@ -73,15 +77,18 @@ async def fetch_and_review():
     拉取所有活跃仓库的最新提交并执行代码审核，
     有更新时向用户推送通知。
     """
+    global _fetcher, _reviewer
     db = SessionLocal()
     try:
         repos = get_active_repos(db)
-        fetcher = GitFetcher(db)
-        reviewer = CodeReviewer(db)
+        if _fetcher is None:
+            _fetcher = GitFetcher(db)
+        if _reviewer is None:
+            _reviewer = CodeReviewer(db)
 
         for repo in repos:
             try:
-                new_commits = fetcher.clone_or_pull(repo)
+                new_commits = _fetcher.clone_or_pull(repo)
                 if not new_commits:
                     continue
 
@@ -90,7 +97,7 @@ async def fetch_and_review():
 
                 for commit in new_commits:
                     try:
-                        review = reviewer.review(commit)
+                        review = _reviewer.review(commit)
                         notification_commits.append((commit, review))
                     except Exception as e:
                         logger.error(f"Review failed for commit {commit.id}: {e}")
@@ -166,8 +173,8 @@ async def generate_monthly_report():
 def start_scheduler():
     init_db()
 
-    # Git fetch & review: every 1 minute (for testing)
-    scheduler.add_job(fetch_and_review, "interval", minutes=1, id="fetch_review")
+    # Git fetch & review: every 30 minutes
+    scheduler.add_job(fetch_and_review, "interval", minutes=30, id="fetch_review")
 
     # Daily report: 18:00
     scheduler.add_job(generate_daily_report, "cron", hour=18, minute=0, id="daily_report")

@@ -7,31 +7,6 @@ from app.conversation.engine import ConversationEngine
 
 logger = logging.getLogger(__name__)
 
-BOT_INTRODUCTION = """🤖 *欢迎使用 ai-code-reporter！*
-
-我是你的 *AI 代码报告助手*，帮你自动追踪 Git 仓库变化、执行代码审核，并按时推送工作汇报。
-
-*我能做什么？*
-📦 接入你的 Git 仓库，自动监控每次提交
-🔍 每次提交自动进行 AI 代码审查
-📋 每天 18:00 自动推送日结报告到本对话
-📊 每周一 09:00 推送周结报告
-📈 每月 1 号推送月结报告
-💬 你可以直接用自然语言查询历史数据
-
-*开始使用只需要三步：*
-第一步：告诉我你的 Git 仓库地址
-第二步：配置访问令牌
-第三步：等待系统自动运行
-
-现在输入 /start 开始配置吧！"""
-
-ONBOARDING_STEPS = {
-    0: "📌 *第一步：绑定账号*\n\n你已经完成了这一步！你的 TG 账号已绑定成功。\n\n接下来我们继续👇",
-    1: "📌 *第二步：添加 Git 仓库*\n\n使用以下命令添加你的第一个仓库：\n\n`/addproject 项目名称 | 仓库地址 | 访问令牌 | 分支`\n\n例如：\n`/addproject myapp | https://github.com/user/repo.git | ghp_xxxxxx | main`\n\n💡 *什么是访问令牌？*\n用于让系统读取你的仓库代码，只需要只读权限。\n- GitHub：Settings → Developer settings → Personal access tokens\n- Gitee：设置 → 私人令牌\n- GitLab：Settings → Access Tokens",
-    2: "📌 *第三步：完成！*\n\n仓库添加成功后，系统会自动：\n• 每 30 分钟拉取最新代码\n• 每次新提交自动执行 AI 审核\n• 到时间自动推送报告到这里\n\n你可以随时：\n• 用自然语言问我历史数据：\"昨天谁提交了代码？\"\n• 添加更多项目：`/addproject ...`\n• 切换项目：`/switch <编号>`\n• 查看项目列表：`/projects`\n• 查看帮助：`/help`",
-}
-
 HELP_TEXT = """🤖 *ai-code-reporter 使用帮助*
 
 *命令列表：*
@@ -237,7 +212,7 @@ class BotHandlers:
         from app.models import Report
         report = (
             self.db.query(Report)
-            .filter(Report.repo_id == active.id, Report.status == "sent")
+            .filter(Report.repo_id == active.id)
             .order_by(Report.created_at.desc())
             .first()
         )
@@ -250,12 +225,8 @@ class BotHandlers:
             await update.message.reply_text(text)
         else:
             await update.message.reply_text(
-                f"📭 *{active.name}* 暂无已推送的报告。\n\n"
-                "报告会在以下时间自动生成：\n"
-                "• 日结：每天 18:00\n"
-                "• 周结：每周一 09:00\n"
-                "• 月结：每月 1 号 09:00\n\n"
-                "你也可以直接问我，例如：\"昨天有提交吗？\""
+                f"📭 *{active.name}* 暂无报告。\n\n"
+                "你可以直接在对话中告诉我，例如：\"看看今天的日报\""
             )
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

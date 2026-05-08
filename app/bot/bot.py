@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.bot.handlers import BotHandlers, HELP_TEXT
+from app.bot.handlers import BotHandlers
 from app.bot.project_manager import ProjectManager
 from app.conversation.engine import ConversationEngine
 

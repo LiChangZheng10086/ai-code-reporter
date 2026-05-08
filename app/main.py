@@ -33,14 +33,16 @@ async def lifespan(app: FastAPI):
     try:
         bot = TelegramBot(db)
         await bot.start()
-    finally:
+    except Exception as e:
         db.close()
+        raise
 
     yield
 
     # Shutdown
     if bot:
         await bot.stop()
+    db.close()
     logger.info("Shutdown complete")
 
 
