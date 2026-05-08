@@ -14,6 +14,8 @@ from app.conversation.prompts import (
     EXTRACT_PARAMS_PROMPT,
     QUERY_RESPONSE_PROMPT,
 )
+from app.git_monitor.fetcher import GitFetcher
+from app.reviewer.engine import CodeReviewer
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +44,20 @@ class ConversationEngine:
         builder.add_node("generate_response", self._generate_response)
         builder.add_node("chitchat_response", self._chitchat_response)
         builder.add_node("refuse_response", self._refuse_response)
+        builder.add_node("check_update", self._check_update)
 
         builder.set_entry_point("classify_intent")
         builder.add_conditional_edges(
             "classify_intent",
             self._route_intent,
-            {"query": "extract_params", "chitchat": "chitchat_response", "refuse": "refuse_response"},
+            {"query": "extract_params", "chitchat": "chitchat_response", "refuse": "refuse_response", "update": "check_update"},
         )
         builder.add_edge("extract_params", "retrieve_data")
         builder.add_edge("retrieve_data", "generate_response")
         builder.add_edge("generate_response", END)
         builder.add_edge("chitchat_response", END)
         builder.add_edge("refuse_response", END)
+        builder.add_edge("check_update", END)
 
         return builder.compile()
 
@@ -72,16 +76,18 @@ class ConversationEngine:
         prompt = CLASSIFY_INTENT_PROMPT.format(message=state["message"])
         resp = self.llm.invoke([HumanMessage(content=prompt)])
         intent = resp.content.strip().lower()
-        valid = ("list_commits", "list_reviews", "get_report", "chitchat", "refuse")
+        valid = ("list_commits", "list_reviews", "get_report", "check_update", "chitchat", "refuse")
         if intent not in valid:
             # Default to list_commits when uncertain, so bot tries to help
             intent = "list_commits"
         return {"intent": intent}
 
-    def _route_intent(self, state: ConvState) -> Literal["query", "chitchat", "refuse"]:
+    def _route_intent(self, state: ConvState) -> Literal["query", "chitchat", "refuse", "update"]:
         intent = state["intent"]
         if intent in ("list_commits", "list_reviews", "get_report"):
             return "query"
+        if intent == "check_update":
+            return "update"
         return intent  # chitchat or refuse
 
     def _refuse_response(self, state: ConvState) -> dict:
@@ -122,6 +128,70 @@ class ConversationEngine:
             HumanMessage(content=prompt),
         ])
         return {"response": resp.content}
+
+    def _check_update(self, state: ConvState) -> dict:
+        """立即拉取远程代码，检查是否有新提交。"""
+        pm = ProjectManager(self.db)
+        repos = pm.get_user_repositories(state["user_id"])
+
+        if not repos:
+            return {"response": "你还没有添加任何 Git 仓库，请先使用 /addproject 添加仓库。"}
+
+        active = pm.get_active_project(state["user_id"])
+        if not active:
+            return {"response": "当前没有活动项目。请先使用 /switch 切换到要检查的项目，或指定项目名称。"}
+
+        fetcher = GitFetcher(self.db)
+        reviewer = CodeReviewer(self.db)
+
+        try:
+            new_commits = fetcher.clone_or_pull(active)
+        except Exception as e:
+            logger.error(f"Git fetch failed for {active.name}: {e}")
+            return {"response": f"❌ 拉取 {active.name} 代码失败：{str(e)[:200]}"}
+
+        if not new_commits:
+            return {"response": f"✅ {active.name} 当前已经是最新，没有新的代码提交。"}
+
+        lines = [
+            f"📦 *{active.name}* 检测到 {len(new_commits)} 个新提交！",
+            "━━━━━━━━━━━━━━━━━",
+        ]
+
+        for commit in new_commits:
+            try:
+                review = reviewer.review(commit)
+            except Exception as e:
+                review = None
+                logger.error(f"Review failed for commit {commit.id}: {e}")
+
+            lines.append("")
+            lines.append(f"📝 Commit `{commit.commit_hash[:8]}`")
+            lines.append(f"👤 提交人: {commit.author}")
+            lines.append(f"💬 信息: {commit.message.strip()[:200]}")
+            lines.append(f"🕐 {commit.committed_at.strftime('%m-%d %H:%M')}")
+
+            if review:
+                risk_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(review.risk_level, "⚪")
+                lines.append(f"{risk_icon} 审核: 风险 {review.risk_level} | 评分 {review.score or 'N/A'}")
+
+                if review.issues:
+                    text = json.dumps(review.issues, ensure_ascii=False)[:500]
+                    lines.append(f"⚠️ 发现的问题: {text}")
+                else:
+                    lines.append("✅ 未发现明显问题")
+
+                if review.suggestions:
+                    sugs = "; ".join(str(s)[:200] for s in review.suggestions)
+                    lines.append(f"💡 优化建议: {sugs[:500]}")
+            else:
+                lines.append("⏳ 代码审核中...")
+
+        mem = ConversationMemory(self.db, state["user_id"])
+        mem.add_message("user", state["message"])
+        mem.add_message("assistant", "\n".join(lines))
+
+        return {"response": "\n".join(lines)}
 
     def _extract_params(self, state: ConvState) -> dict:
         prompt = EXTRACT_PARAMS_PROMPT.format(message=state["message"])
