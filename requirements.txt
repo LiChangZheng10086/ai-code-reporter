@@ -1,0 +1,13 @@
+fastapi>=0.136.0
+uvicorn[standard]>=0.38.0
+langchain>=0.3.27
+langchain-core>=0.3.75
+langchain-openai>=0.3.30
+langgraph>=1.0.0
+pydantic>=2.13.0
+pydantic-settings>=2.8.0
+python-telegram-bot>=22.7
+gitpython>=3.1.45
+apscheduler>=3.11.0
+sqlalchemy>=2.0.48
+python-dotenv>=1.0.1
