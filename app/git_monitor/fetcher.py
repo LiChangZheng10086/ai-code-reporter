@@ -63,7 +63,9 @@ class GitFetcher:
 
     def _get_diff(self, git_repo: Repo, commit) -> str:
         if not commit.parents:
-            return commit.tree.data  # fallback
+            # Initial commit — list files instead of diff
+            files = [blob.path for blob in commit.tree.traverse() if blob.type == "blob"]
+            return f"初始提交，共 {len(files)} 个文件：\n" + "\n".join(files)
         diff = commit.parents[0].diff(commit, create_patch=True)
         lines = []
         for d in diff:
